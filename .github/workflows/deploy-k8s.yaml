@@ -1,0 +1,101 @@
+name: Apply Kubernetes manifests to GKE
+
+# Manual only. Applying manifests changes the cluster, so this never runs
+# on push — you trigger it deliberately from the Actions UI.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. 1.0.0 or sha-abc1234)"
+        required: true
+        default: "1.0.0"
+      apply_network_policy:
+        description: "Apply NetworkPolicy manifest? (test in staging first)"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: smart-education-assignment
+  GKE_CLUSTER: prod-gke
+  GKE_REGION: me-central1
+  AR_HOST: me-central1-docker.pkg.dev
+  AR_REPO: prod-gke-repo
+  NAMESPACE: smart-education
+
+jobs:
+  apply:
+    name: kubectl apply
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          install_components: "gke-gcloud-auth-plugin"
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "${GKE_CLUSTER}" \
+            --region "${GKE_REGION}" \
+            --project "${GCP_PROJECT_ID}"
+
+      - name: Update image tags in manifests
+        run: |
+          TAG="${{ inputs.image_tag }}"
+          BACKEND_IMG="${AR_HOST}/${GCP_PROJECT_ID}/${AR_REPO}/smart-education-backend:${TAG}"
+          FRONTEND_IMG="${AR_HOST}/${GCP_PROJECT_ID}/${AR_REPO}/smart-education-frontend:${TAG}"
+
+          # In-place tag rewrite. Manifests already reference the AR path, so
+          # we only replace the trailing :version.
+          sed -i -E "s#(smart-education-backend):[^ ]+#\\1:${TAG}#g"  k8s/backend-deployment.yaml k8s/migration-job.yaml
+          sed -i -E "s#(smart-education-frontend):[^ ]+#\\1:${TAG}#g" k8s/frontend-deployment.yaml
+
+          echo "backend image  → ${BACKEND_IMG}"
+          echo "frontend image → ${FRONTEND_IMG}"
+
+      - name: Apply base manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/configmap.yaml
+          kubectl apply -f k8s/secret.yaml
+          kubectl apply -f k8s/backend-serviceaccount.yaml
+
+      - name: Run migration Job and wait
+        run: |
+          # Recreate the Job so a new version's migrations always run.
+          kubectl -n "${NAMESPACE}" delete job backend-migrate --ignore-not-found
+          kubectl apply -f k8s/migration-job.yaml
+          kubectl -n "${NAMESPACE}" wait --for=condition=complete job/backend-migrate --timeout=300s
+          kubectl -n "${NAMESPACE}" logs job/backend-migrate
+
+      - name: Apply workloads + services + HPAs + ingress
+        run: |
+          kubectl apply -f k8s/backend-deployment.yaml
+          kubectl apply -f k8s/backend-service.yaml
+          kubectl apply -f k8s/frontend-deployment.yaml
+          kubectl apply -f k8s/frontend-service.yaml
+          kubectl apply -f k8s/backend-hpa.yaml
+          kubectl apply -f k8s/frontend-hpa.yaml
+          kubectl apply -f k8s/ingress.yaml
+
+      - name: Apply NetworkPolicy (optional)
+        if: ${{ inputs.apply_network_policy == true }}
+        run: kubectl apply -f k8s/network-policy.yaml
+
+      - name: Verify rollout
+        run: |
+          kubectl -n "${NAMESPACE}" rollout status deployment/backend  --timeout=180s
+          kubectl -n "${NAMESPACE}" rollout status deployment/frontend --timeout=180s
+          kubectl -n "${NAMESPACE}" get deploy,svc,ingress,hpa

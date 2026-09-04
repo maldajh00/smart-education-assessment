@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.4
+pydantic-settings==2.7.1
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.3
+alembic==1.14.0
+prometheus-client==0.21.1
+
+# Test-only (kept together for simplicity; move to requirements-dev.txt later if desired)
+pytest==8.3.4
+httpx==0.28.1

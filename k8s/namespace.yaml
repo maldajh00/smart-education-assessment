@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smart-education
+  labels:
+    name: smart-education
+    app.kubernetes.io/part-of: smart-education-portal
