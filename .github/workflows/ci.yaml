@@ -1,4 +1,4 @@
-name: CI
+name: CI & Publish
 
 on:
   push:
@@ -9,6 +9,20 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Required so the publish job can mint an OIDC token for Workload Identity
+# Federation. contents:read is the minimum for actions/checkout.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: smart-education-assignment
+  AR_HOST: me-central1-docker.pkg.dev
+  AR_REPO: prod-gke-repo
+  BACKEND_IMAGE: me-central1-docker.pkg.dev/smart-education-assignment/prod-gke-repo/smart-education-backend
+  FRONTEND_IMAGE: me-central1-docker.pkg.dev/smart-education-assignment/prod-gke-repo/smart-education-frontend
+  APP_VERSION: "1.0.0"
 
 jobs:
   backend-tests:
@@ -63,7 +77,7 @@ jobs:
         run: npm run build
 
   docker-build:
-    name: Docker build (no push)
+    name: Docker build (validation, no push)
     runs-on: ubuntu-latest
     needs: [backend-tests, frontend-build]
     steps:
@@ -90,3 +104,66 @@ jobs:
           tags: smart-education-frontend:ci-${{ github.sha }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
+
+  publish:
+    name: Push images to Artifact Registry
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-build, docker-build]
+    # Only publish from pushes to main. PRs and feature branches stop at
+    # validation — they never touch Artifact Registry.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/940549323188/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+          service_account: github-actions-gsa@smart-education-assignment.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.AR_HOST }} --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+            ${{ env.BACKEND_IMAGE }}:${{ env.APP_VERSION }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+            ${{ env.FRONTEND_IMAGE }}:${{ env.APP_VERSION }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published images"
+            echo "- \`${BACKEND_IMAGE}:${GITHUB_SHA}\`"
+            echo "- \`${BACKEND_IMAGE}:${APP_VERSION}\`"
+            echo "- \`${FRONTEND_IMAGE}:${GITHUB_SHA}\`"
+            echo "- \`${FRONTEND_IMAGE}:${APP_VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
