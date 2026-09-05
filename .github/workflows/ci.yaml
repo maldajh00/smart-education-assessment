@@ -246,7 +246,28 @@ jobs:
           echo "Promoting image SHA:"
           echo "$IMAGE_SHA"
 
-          sed -i "s/newTag: PLACEHOLDER_SHA/newTag: ${IMAGE_SHA}/g" "$FILE"
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import os
+
+          path = Path("gitops/k8s/overlays/prod/kustomization.yaml")
+          image_sha = os.environ["IMAGE_SHA"]
+
+          lines = path.read_text().splitlines()
+          updated = 0
+
+          for i, line in enumerate(lines):
+              if line.strip().startswith("newTag:"):
+                  prefix = line.split("newTag:", 1)[0]
+                  lines[i] = f"{prefix}newTag: {image_sha}"
+                  updated += 1
+
+          if updated != 2:
+              raise SystemExit(f"Expected 2 image tags, but found {updated}")
+
+          path.write_text("\\n".join(lines) + "\\n")
+          print(f"Updated {updated} image tags to {image_sha}")
+          PYTHON
 
           echo
           echo "Updated image tags:"
