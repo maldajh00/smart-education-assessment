@@ -265,7 +265,7 @@ jobs:
           if updated != 2:
               raise SystemExit(f"Expected 2 image tags, but found {updated}")
 
-          path.write_text("\\n".join(lines) + "\\n")
+          path.write_text("\n".join(lines) + "\n")
           print(f"Updated {updated} image tags to {image_sha}")
           PYTHON
 
