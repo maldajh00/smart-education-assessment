@@ -1,4 +1,4 @@
-name: CI & Publish
+name: CI, Publish & GitOps Promotion
 
 on:
   push:
@@ -10,8 +10,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Required so the publish job can mint an OIDC token for Workload Identity
-# Federation. contents:read is the minimum for actions/checkout.
+# Required for Google Cloud Workload Identity Federation.
 permissions:
   contents: read
   id-token: write
@@ -25,9 +24,14 @@ env:
   APP_VERSION: "1.0.0"
 
 jobs:
+
+  # ============================================================
+  # 1. BACKEND TESTS
+  # ============================================================
   backend-tests:
     name: Backend tests (pytest)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +50,6 @@ jobs:
       - name: Run pytest
         working-directory: backend
         env:
-          # No DB in CI — DB-tagged tests auto-skip via the requires_db fixture.
           DATABASE_HOST: "127.0.0.1"
           DATABASE_PORT: "1"
           DATABASE_NAME: "ci"
@@ -55,9 +58,14 @@ jobs:
           CORS_ORIGINS: "http://localhost:5173"
         run: pytest -q
 
+
+  # ============================================================
+  # 2. FRONTEND BUILD
+  # ============================================================
   frontend-build:
     name: Frontend build (tsc + vite)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -70,16 +78,27 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Type-check + build
         working-directory: frontend
         run: npm run build
 
+
+  # ============================================================
+  # 3. DOCKER BUILD VALIDATION
+  # ============================================================
   docker-build:
     name: Docker build (validation, no push)
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-build]
+    needs:
+      - backend-tests
+      - frontend-build
+
     steps:
       - uses: actions/checkout@v4
 
@@ -105,13 +124,22 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
+
+  # ============================================================
+  # 4. PUBLISH IMAGES TO ARTIFACT REGISTRY
+  # ============================================================
   publish:
     name: Push images to Artifact Registry
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-build, docker-build]
-    # Only publish from pushes to main. PRs and feature branches stop at
-    # validation — they never touch Artifact Registry.
+
+    needs:
+      - backend-tests
+      - frontend-build
+      - docker-build
+
+    # Only main pushes can publish images.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     steps:
       - uses: actions/checkout@v4
 
@@ -128,7 +156,8 @@ jobs:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.AR_HOST }} --quiet
+        run: |
+          gcloud auth configure-docker ${{ env.AR_HOST }} --quiet
 
       - uses: docker/setup-buildx-action@v3
 
@@ -158,7 +187,7 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-      - name: Summary
+      - name: Publish summary
         run: |
           {
             echo "### Published images"
@@ -167,3 +196,118 @@ jobs:
             echo "- \`${FRONTEND_IMAGE}:${GITHUB_SHA}\`"
             echo "- \`${FRONTEND_IMAGE}:${APP_VERSION}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+
+  # ============================================================
+  # 5. PROMOTE IMAGE SHA TO GITOPS REPOSITORY
+  # ============================================================
+  promote-gitops:
+    name: Promote image SHA to GitOps
+    runs-on: ubuntu-latest
+
+    needs:
+      - publish
+
+    # Only run after successful publication from main.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+
+      - name: Checkout application repository
+        uses: actions/checkout@v4
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: maldajh00/smart-education-gitops
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+          ref: main
+
+      # --------------------------------------------------------
+      # Update both production images to the immutable Git SHA.
+      # --------------------------------------------------------
+      - name: Update production image tags
+        env:
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          FILE="gitops/k8s/overlays/prod/kustomization.yaml"
+
+          echo "Production manifest:"
+          echo "$FILE"
+
+          echo
+          echo "Current image tags:"
+          grep -n "newTag:" "$FILE"
+
+          echo
+          echo "Promoting image SHA:"
+          echo "$IMAGE_SHA"
+
+          sed -i "s/newTag: PLACEHOLDER_SHA/newTag: ${IMAGE_SHA}/g" "$FILE"
+
+          echo
+          echo "Updated image tags:"
+          grep -n "newTag:" "$FILE"
+
+      # --------------------------------------------------------
+      # Validate the GitOps change before committing.
+      # --------------------------------------------------------
+      - name: Validate GitOps manifests
+        run: |
+          set -euo pipefail
+
+          cd gitops
+
+          echo "Checking Git diff..."
+          git diff --check
+
+          echo
+          echo "Production kustomization diff:"
+          git diff -- k8s/overlays/prod/kustomization.yaml
+
+      # --------------------------------------------------------
+      # Commit the desired state into Git.
+      # --------------------------------------------------------
+      - name: Commit and push GitOps change
+        env:
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          cd gitops
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- k8s/overlays/prod/kustomization.yaml; then
+            echo "No GitOps image change detected."
+            exit 0
+          fi
+
+          git add k8s/overlays/prod/kustomization.yaml
+
+          git commit \
+            -m "deploy: promote ${IMAGE_SHA}"
+
+          git push origin main
+
+      # --------------------------------------------------------
+      # Provide evidence in GitHub Actions.
+      # --------------------------------------------------------
+      - name: Promotion summary
+        run: |
+          cd gitops
+
+          echo "### GitOps Promotion" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Application commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitOps repository: \`maldajh00/smart-education-gitops\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GitOps revision:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          git log -1 --oneline >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Production image tags:" >> "$GITHUB_STEP_SUMMARY"
+          grep "newTag:" k8s/overlays/prod/kustomization.yaml >> "$GITHUB_STEP_SUMMARY"
