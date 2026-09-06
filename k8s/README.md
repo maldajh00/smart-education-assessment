@@ -1,10 +1,16 @@
-# Kubernetes manifests
+# Kubernetes manifests (historical — superseded by GitOps)
+
+**Superseded.** Production is now deployed and reconciled by ArgoCD from
+[`maldajh00/smart-education-gitops`](https://github.com/maldajh00/smart-education-gitops)
+(`k8s/overlays/prod`). These manifests are kept for reference only and
+are not applied by any CI workflow — the `deploy-k8s.yaml` workflow that
+used to `kubectl apply` them directly has been removed, since a manual
+apply here would fight ArgoCD's `selfHeal` on the real cluster.
 
 Manifests for deploying Smart Education Portal to GKE Standard (cluster
 `prod-gke` in `me-central1`, project `smart-education-assignment`).
 
-Nothing here is applied automatically. See Phase 13 for the full deploy
-runbook.
+Nothing here is applied automatically.
 
 ## Files
 
