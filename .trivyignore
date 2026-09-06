@@ -1,0 +1,24 @@
+# Trivy ignore list for CI image/dependency scans (see .github/workflows/ci.yaml).
+#
+# Every entry here is a documented, reviewed exception — not a way to
+# silence the scanner. Each CVE ID must have a comment explaining why it
+# doesn't apply to how this application actually runs. Remove an entry as
+# soon as a fixed base image is available, or if the container's runtime
+# model changes in a way that makes the CVE relevant again.
+
+# --- frontend (nginx:1.31-alpine) ---
+# util-linux/libuuid mount(8)/nsenter privilege-escalation and TOCTOU
+# CVEs. All require CAP_SYS_ADMIN and the ability to invoke privileged
+# mount/nsenter operations. This container runs `nginx` as the
+# unprivileged `nginx` user (USER nginx in frontend/Dockerfile), serves
+# only static files, and never calls mount/nsenter. In Kubernetes the
+# pod additionally runs under the PodSecurityStandards "restricted"
+# profile (no added capabilities, non-root). No fixed version exists yet
+# in Alpine's current stable release as of the image used.
+CVE-2026-53612
+CVE-2026-53613
+CVE-2026-53614
+CVE-2026-76642
+CVE-2026-78408
+CVE-2026-78409
+CVE-2026-78410

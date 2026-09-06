@@ -22,7 +22,11 @@ ENV VITE_API_BASE_URL=/api
 RUN npm run build
 
 # ---------- Runtime stage ----------
-FROM nginx:1.27-alpine AS runtime
+# 1.27-alpine's Alpine base had accumulated 34 CRITICAL/HIGH OS-package CVEs
+# (openssl, c-ares, etc.) by CI-scan time; 1.31-alpine tracks current Alpine
+# stable and drops that to 7, all in util-linux/libuuid (see .trivyignore
+# at repo root for why those are accepted here).
+FROM nginx:1.31-alpine AS runtime
 
 # Non-privileged port so we can run as a non-root user.
 COPY nginx.conf /etc/nginx/nginx.conf

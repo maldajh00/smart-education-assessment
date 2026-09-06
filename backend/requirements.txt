@@ -8,10 +8,10 @@ psycopg[binary]==3.2.3
 alembic==1.14.0
 prometheus-client==0.21.1
 
-# Pinned directly to close CI-flagged CVEs in transitive dependencies
-# (GHSA-6v7p-g79w-8964, CVE-2025-47273): neither is imported by app code.
+# Pinned directly to close a CI-flagged CVE in a transitive dependency
+# (GHSA-6v7p-g79w-8964): not imported by app code, some other package
+# resolves an older msgpack transitively otherwise.
 msgpack==1.2.1
-setuptools==78.1.1
 
 # Test-only (kept together for simplicity; move to requirements-dev.txt later if desired)
 pytest==8.3.4
