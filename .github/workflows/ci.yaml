@@ -108,7 +108,7 @@ jobs:
           fetch-depth: 0
 
       - name: Trivy filesystem scan (dependency vulnerabilities)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -118,7 +118,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Trivy secret scan
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -152,7 +152,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=backend
 
       - name: Scan backend image
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: smart-education-backend:ci-${{ github.sha }}
@@ -171,7 +171,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend
 
       - name: Scan frontend image
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: smart-education-frontend:ci-${{ github.sha }}
